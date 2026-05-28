@@ -8,7 +8,7 @@ interface OntologyViewProps {
 
 function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [dimensions] = useState({ w: 900, h: 600 });
+  const [dimensions] = useState({ w: 1100, h: 720 });
 
   const entityMap = useMemo(() => {
     const m = new Map<string, OntologyEntity>();
@@ -17,36 +17,53 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
   }, [ontology]);
 
   const { nodes, links } = useMemo(() => {
-    // Position entities in a radial layout grouped by type
-    const typeGroups: Record<string, number> = {
-      domain: 0,
-      topic: 1,
-      subtopic: 2,
-      concept: 3,
-      method: 4,
-      actor: 5,
-      outcome: 6,
+    // Each type gets its own orbit ring with a distinct radius
+    // Nodes within each ring are distributed evenly to prevent overlap
+    const typeConfig: Record<string, { ring: number; radius: number; nodeRadius: number }> = {
+      domain:   { ring: 0, radius: 0,   nodeRadius: 30 },
+      topic:    { ring: 1, radius: 130, nodeRadius: 18 },
+      subtopic: { ring: 2, radius: 230, nodeRadius: 14 },
+      concept:  { ring: 3, radius: 320, nodeRadius: 11 },
+      method:   { ring: 4, radius: 400, nodeRadius: 10 },
+      actor:    { ring: 5, radius: 470, nodeRadius: 10 },
+      outcome:  { ring: 6, radius: 540, nodeRadius: 10 },
     };
 
-    const groupCount = new Map<number, number>();
     const cx = dimensions.w / 2;
     const cy = dimensions.h / 2;
 
-    const positioned = ontology.entities.map((e) => {
-      const group = typeGroups[e.type] ?? 3;
-      const count = groupCount.get(group) || 0;
-      groupCount.set(group, count + 1);
+    // Group entities by type first so we can compute spacing per ring
+    const byType = new Map<string, OntologyEntity[]>();
+    ontology.entities.forEach((e) => {
+      const arr = byType.get(e.type) || [];
+      arr.push(e);
+      byType.set(e.type, arr);
+    });
 
-      const angleStep = (2 * Math.PI) / Math.max(ontology.entities.filter((x) => typeGroups[x.type] === group).length, 1);
-      const baseAngle = angleStep * count;
-      const radius = e.type === "domain" ? 0 : e.type === "topic" ? 120 : e.type === "subtopic" ? 210 : 270;
+    // Track index per type for angular placement
+    const typeIndex = new Map<string, number>();
+
+    const positioned = ontology.entities.map((e) => {
+      const cfg = typeConfig[e.type] ?? typeConfig.concept;
+      const idx = typeIndex.get(e.type) ?? 0;
+      typeIndex.set(e.type, idx + 1);
+      const total = byType.get(e.type)?.length ?? 1;
+
+      // Angle offset per type so rings don't stack labels on top of each other
+      const typeOffset: Record<string, number> = {
+        domain: 0, topic: 0, subtopic: Math.PI / total,
+        concept: Math.PI / 6, method: Math.PI / 4,
+        actor: Math.PI / 3, outcome: Math.PI / 2,
+      };
+      const offset = typeOffset[e.type] ?? 0;
+      const angle = (2 * Math.PI * idx) / total + offset - Math.PI / 2;
 
       return {
         ...e,
-        x: cx + radius * Math.cos(baseAngle - Math.PI / 2),
-        y: cy + radius * Math.sin(baseAngle - Math.PI / 2),
+        x: cx + cfg.radius * Math.cos(angle),
+        y: cy + cfg.radius * Math.sin(angle),
         color: ontology.legend[e.type]?.color || "#94a3b8",
-        r: e.type === "domain" ? 28 : e.type === "topic" ? 18 : e.type === "subtopic" ? 14 : 10,
+        r: cfg.nodeRadius,
       };
     });
 
@@ -82,74 +99,113 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
         viewBox={`0 0 ${dimensions.w} ${dimensions.h}`}
         className="w-full h-auto border border-slate-200 rounded-xl bg-slate-50/50"
       >
-        {/* Links */}
-        {links.map((l, i) => (
-          <g key={i}>
-            <line
-              x1={l.sx}
-              y1={l.sy}
-              x2={l.tx}
-              y2={l.ty}
-              stroke={relationColors[l.type] || "#cbd5e1"}
-              strokeWidth={hovered && (l.source === hovered || l.target === hovered) ? 2.5 : 1}
-              strokeOpacity={hovered ? (l.source === hovered || l.target === hovered ? 0.8 : 0.15) : 0.35}
-              strokeDasharray={l.type === "related" ? "4 3" : undefined}
-            />
-            <text
-              x={(l.sx + l.tx) / 2}
-              y={(l.sy + l.ty) / 2 - 4}
-              textAnchor="middle"
-              fontSize="7"
-              fill={relationColors[l.type] || "#94a3b8"}
-              opacity={hovered && (l.source === hovered || l.target === hovered) ? 1 : 0}
-              className="transition-opacity"
-            >
-              {l.label}
-            </text>
-          </g>
+        {/* Orbit ring guides */}
+        {[130, 230, 320, 400, 470, 540].map((r) => (
+          <circle
+            key={r}
+            cx={dimensions.w / 2}
+            cy={dimensions.h / 2}
+            r={r}
+            fill="none"
+            stroke="#e2e8f0"
+            strokeWidth={1}
+            strokeDasharray="3 5"
+          />
         ))}
 
+        {/* Links */}
+        {links.map((l, i) => {
+          const isActive = hovered && (l.source === hovered || l.target === hovered);
+          // Curved paths for better readability
+          const mx = (l.sx + l.tx) / 2;
+          const my = (l.sy + l.ty) / 2;
+          const dx = l.tx - l.sx;
+          const dy = l.ty - l.sy;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const curve = len * 0.12;
+          const cpx = mx - (dy / len) * curve;
+          const cpy = my + (dx / len) * curve;
+          return (
+            <g key={i}>
+              <path
+                d={`M ${l.sx} ${l.sy} Q ${cpx} ${cpy} ${l.tx} ${l.ty}`}
+                stroke={relationColors[l.type] || "#cbd5e1"}
+                strokeWidth={isActive ? 2.5 : 1}
+                strokeOpacity={hovered ? (isActive ? 0.85 : 0.1) : 0.3}
+                strokeDasharray={l.type === "related" ? "4 3" : undefined}
+                fill="none"
+              />
+              <text
+                x={cpx}
+                y={cpy - 4}
+                textAnchor="middle"
+                fontSize="7"
+                fill={relationColors[l.type] || "#94a3b8"}
+                opacity={isActive ? 1 : 0}
+                className="transition-opacity pointer-events-none"
+              >
+                {l.label}
+              </text>
+            </g>
+          );
+        })}
+
         {/* Nodes */}
-        {nodes.map((n) => (
-          <g
-            key={n.id}
-            onMouseEnter={() => setHovered(n.id)}
-            onMouseLeave={() => setHovered(null)}
-            className="cursor-pointer"
-          >
-            <circle
-              cx={n.x}
-              cy={n.y}
-              r={n.r + 3}
-              fill="transparent"
-              stroke={hovered === n.id ? n.color : "transparent"}
-              strokeWidth={2}
-              strokeOpacity={0.5}
-            />
-            <circle
-              cx={n.x}
-              cy={n.y}
-              r={n.r}
-              fill={n.color}
-              fillOpacity={hovered && hovered !== n.id ? 0.3 : 0.85}
-              stroke="white"
-              strokeWidth={1.5}
-              className="transition-all"
-            />
-            <text
-              x={n.x}
-              y={n.y + n.r + 12}
-              textAnchor="middle"
-              fontSize={n.type === "domain" ? 10 : n.type === "topic" ? 8 : 6.5}
-              fontWeight={n.type === "domain" || n.type === "topic" ? 600 : 400}
-              fill="#334155"
-              opacity={hovered && hovered !== n.id ? 0.3 : 1}
-              className="transition-opacity pointer-events-none"
+        {nodes.map((n) => {
+          const cx2 = dimensions.w / 2;
+          const cy2 = dimensions.h / 2;
+          // Determine label anchor based on position relative to center
+          const dx = n.x - cx2;
+          const dy = n.y - cy2;
+          const isRight = dx > 20;
+          const isLeft = dx < -20;
+          const isBelow = dy > 0;
+          const labelX = n.type === "domain" ? n.x : isRight ? n.x + n.r + 4 : isLeft ? n.x - n.r - 4 : n.x;
+          const labelY = n.type === "domain" ? n.y + n.r + 14 : isRight || isLeft ? n.y + 4 : isBelow ? n.y + n.r + 12 : n.y - n.r - 5;
+          const anchor = n.type === "domain" ? "middle" : isRight ? "start" : isLeft ? "end" : "middle";
+          const maxLen = n.type === "domain" ? 30 : n.type === "topic" ? 22 : 18;
+
+          return (
+            <g
+              key={n.id}
+              onMouseEnter={() => setHovered(n.id)}
+              onMouseLeave={() => setHovered(null)}
+              className="cursor-pointer"
             >
-              {n.name.length > 25 ? n.name.slice(0, 22) + "..." : n.name}
-            </text>
-          </g>
-        ))}
+              <circle
+                cx={n.x}
+                cy={n.y}
+                r={n.r + 5}
+                fill="transparent"
+                stroke={hovered === n.id ? n.color : "transparent"}
+                strokeWidth={2}
+                strokeOpacity={0.4}
+              />
+              <circle
+                cx={n.x}
+                cy={n.y}
+                r={n.r}
+                fill={n.color}
+                fillOpacity={hovered && hovered !== n.id ? 0.25 : 0.88}
+                stroke="white"
+                strokeWidth={hovered === n.id ? 2.5 : 1.5}
+                className="transition-all"
+              />
+              <text
+                x={labelX}
+                y={labelY}
+                textAnchor={anchor}
+                fontSize={n.type === "domain" ? 11 : n.type === "topic" ? 8.5 : 6.5}
+                fontWeight={n.type === "domain" || n.type === "topic" ? 700 : 400}
+                fill="#1e293b"
+                opacity={hovered && hovered !== n.id ? 0.2 : 1}
+                className="transition-opacity pointer-events-none"
+              >
+                {n.name.length > maxLen ? n.name.slice(0, maxLen - 2) + "…" : n.name}
+              </text>
+            </g>
+          );
+        })}
       </svg>
 
       {/* Hovered entity tooltip */}
