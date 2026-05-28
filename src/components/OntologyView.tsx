@@ -1,37 +1,14 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo } from "react";
 import { Network, ChevronDown, ChevronRight, Info, Zap } from "lucide-react";
-import {
-  forceSimulation,
-  forceLink,
-  forceManyBody,
-  forceCollide,
-  forceCenter,
-  type SimulationNodeDatum,
-  type SimulationLinkDatum,
-} from "d3-force";
 import type { SemanticOntology, OntologyEntity, OntologyRelation } from "../types";
 
 interface OntologyViewProps {
   ontology: SemanticOntology;
 }
 
-interface SimNode extends SimulationNodeDatum, OntologyEntity {
-  color: string;
-  r: number;
-}
-
-interface SimLink extends SimulationLinkDatum<SimNode> {
-  type: string;
-  label: string;
-}
-
 function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [simNodes, setSimNodes] = useState<SimNode[]>([]);
-  const [simLinks, setSimLinks] = useState<SimLink[]>([]);
-  const canvasW = 1100;
-  const canvasH = 750;
-  const tickRef = useRef(0);
+  const [dimensions] = useState({ w: 900, h: 600 });
 
   const entityMap = useMemo(() => {
     const m = new Map<string, OntologyEntity>();
@@ -39,64 +16,52 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
     return m;
   }, [ontology]);
 
-  const { initNodes, initLinks } = useMemo(() => {
-    const nodes: SimNode[] = ontology.entities.map((e) => ({
-      ...e,
-      color: ontology.legend[e.type]?.color || "#94a3b8",
-      r: e.type === "domain" ? 28 : e.type === "topic" ? 18 : e.type === "subtopic" ? 14 : 10,
-      x: canvasW / 2 + (Math.random() - 0.5) * 200,
-      y: canvasH / 2 + (Math.random() - 0.5) * 200,
-    }));
-
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-    const links: SimLink[] = ontology.relations
-      .filter((r) => nodeMap.has(r.source as string) && nodeMap.has(r.target as string))
-      .map((r) => ({
-        source: r.source,
-        target: r.target,
-        type: r.type,
-        label: r.label,
-      }));
-
-    return { initNodes: nodes, initLinks: links };
-  }, [ontology]);
-
-  useEffect(() => {
-    const nodes = initNodes.map((n) => ({ ...n }));
-    const links = initLinks.map((l) => ({ ...l }));
-
-    const sim = forceSimulation<SimNode>(nodes)
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(links)
-          .id((d) => d.id)
-          .distance(150)
-      )
-      .force("charge", forceManyBody().strength(-800))
-      .force(
-        "collide",
-        forceCollide<SimNode>().radius((d) => d.r * 2)
-      )
-      .force("center", forceCenter(canvasW / 2, canvasH / 2))
-      .alphaDecay(0.02)
-      .on("tick", () => {
-        tickRef.current++;
-        if (tickRef.current % 3 === 0 || sim.alpha() < 0.01) {
-          setSimNodes([...nodes]);
-          setSimLinks([...links]);
-        }
-      });
-
-    return () => {
-      sim.stop();
+  const { nodes, links } = useMemo(() => {
+    // Position entities in a radial layout grouped by type
+    const typeGroups: Record<string, number> = {
+      domain: 0,
+      topic: 1,
+      subtopic: 2,
+      concept: 3,
+      method: 4,
+      actor: 5,
+      outcome: 6,
     };
-  }, [initNodes, initLinks]);
 
-  const nodeMap = useMemo(() => {
-    const m = new Map<string, SimNode>();
-    simNodes.forEach((n) => m.set(n.id, n));
-    return m;
-  }, [simNodes]);
+    const groupCount = new Map<number, number>();
+    const cx = dimensions.w / 2;
+    const cy = dimensions.h / 2;
+
+    const positioned = ontology.entities.map((e) => {
+      const group = typeGroups[e.type] ?? 3;
+      const count = groupCount.get(group) || 0;
+      groupCount.set(group, count + 1);
+
+      const angleStep = (2 * Math.PI) / Math.max(ontology.entities.filter((x) => typeGroups[x.type] === group).length, 1);
+      const baseAngle = angleStep * count;
+      const radius = e.type === "domain" ? 0 : e.type === "topic" ? 120 : e.type === "subtopic" ? 210 : 270;
+
+      return {
+        ...e,
+        x: cx + radius * Math.cos(baseAngle - Math.PI / 2),
+        y: cy + radius * Math.sin(baseAngle - Math.PI / 2),
+        color: ontology.legend[e.type]?.color || "#94a3b8",
+        r: e.type === "domain" ? 28 : e.type === "topic" ? 18 : e.type === "subtopic" ? 14 : 10,
+      };
+    });
+
+    const positionedMap = new Map(positioned.map((n) => [n.id, n]));
+    const positionedLinks = ontology.relations
+      .map((r) => {
+        const s = positionedMap.get(r.source);
+        const t = positionedMap.get(r.target);
+        if (!s || !t) return null;
+        return { ...r, sx: s.x, sy: s.y, tx: t.x, ty: t.y };
+      })
+      .filter(Boolean) as (OntologyRelation & { sx: number; sy: number; tx: number; ty: number })[];
+
+    return { nodes: positioned, links: positionedLinks };
+  }, [ontology, dimensions]);
 
   const relationColors: Record<string, string> = {
     broader: "#94a3b8",
@@ -111,64 +76,50 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
 
   const hoveredEntity = hovered ? entityMap.get(hovered) : null;
 
-  const handleMouseEnter = useCallback((id: string) => setHovered(id), []);
-  const handleMouseLeave = useCallback(() => setHovered(null), []);
-
   return (
     <div className="relative">
       <svg
-        viewBox={`0 0 ${canvasW} ${canvasH}`}
+        viewBox={`0 0 ${dimensions.w} ${dimensions.h}`}
         className="w-full h-auto border border-slate-200 rounded-xl bg-slate-50/50"
       >
         {/* Links */}
-        {simLinks.map((l, i) => {
-          const s = typeof l.source === "object" ? l.source : nodeMap.get(l.source as string);
-          const t = typeof l.target === "object" ? l.target : nodeMap.get(l.target as string);
-          if (!s || !t) return null;
-          const sx = s.x ?? 0;
-          const sy = s.y ?? 0;
-          const tx = t.x ?? 0;
-          const ty = t.y ?? 0;
-          const sourceId = (s as SimNode).id;
-          const targetId = (t as SimNode).id;
-          return (
-            <g key={i}>
-              <line
-                x1={sx}
-                y1={sy}
-                x2={tx}
-                y2={ty}
-                stroke={relationColors[l.type] || "#cbd5e1"}
-                strokeWidth={hovered && (sourceId === hovered || targetId === hovered) ? 2.5 : 1}
-                strokeOpacity={hovered ? (sourceId === hovered || targetId === hovered ? 0.8 : 0.15) : 0.35}
-                strokeDasharray={l.type === "related" ? "4 3" : undefined}
-              />
-              <text
-                x={(sx + tx) / 2}
-                y={(sy + ty) / 2 - 4}
-                textAnchor="middle"
-                fontSize="7"
-                fill={relationColors[l.type] || "#94a3b8"}
-                opacity={hovered && (sourceId === hovered || targetId === hovered) ? 1 : 0}
-                className="transition-opacity"
-              >
-                {l.label}
-              </text>
-            </g>
-          );
-        })}
+        {links.map((l, i) => (
+          <g key={i}>
+            <line
+              x1={l.sx}
+              y1={l.sy}
+              x2={l.tx}
+              y2={l.ty}
+              stroke={relationColors[l.type] || "#cbd5e1"}
+              strokeWidth={hovered && (l.source === hovered || l.target === hovered) ? 2.5 : 1}
+              strokeOpacity={hovered ? (l.source === hovered || l.target === hovered ? 0.8 : 0.15) : 0.35}
+              strokeDasharray={l.type === "related" ? "4 3" : undefined}
+            />
+            <text
+              x={(l.sx + l.tx) / 2}
+              y={(l.sy + l.ty) / 2 - 4}
+              textAnchor="middle"
+              fontSize="7"
+              fill={relationColors[l.type] || "#94a3b8"}
+              opacity={hovered && (l.source === hovered || l.target === hovered) ? 1 : 0}
+              className="transition-opacity"
+            >
+              {l.label}
+            </text>
+          </g>
+        ))}
 
         {/* Nodes */}
-        {simNodes.map((n) => (
+        {nodes.map((n) => (
           <g
             key={n.id}
-            onMouseEnter={() => handleMouseEnter(n.id)}
-            onMouseLeave={handleMouseLeave}
+            onMouseEnter={() => setHovered(n.id)}
+            onMouseLeave={() => setHovered(null)}
             className="cursor-pointer"
           >
             <circle
-              cx={n.x ?? 0}
-              cy={n.y ?? 0}
+              cx={n.x}
+              cy={n.y}
               r={n.r + 3}
               fill="transparent"
               stroke={hovered === n.id ? n.color : "transparent"}
@@ -176,8 +127,8 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
               strokeOpacity={0.5}
             />
             <circle
-              cx={n.x ?? 0}
-              cy={n.y ?? 0}
+              cx={n.x}
+              cy={n.y}
               r={n.r}
               fill={n.color}
               fillOpacity={hovered && hovered !== n.id ? 0.3 : 0.85}
@@ -186,8 +137,8 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
               className="transition-all"
             />
             <text
-              x={n.x ?? 0}
-              y={(n.y ?? 0) + n.r + 12}
+              x={n.x}
+              y={n.y + n.r + 12}
               textAnchor="middle"
               fontSize={n.type === "domain" ? 10 : n.type === "topic" ? 8 : 6.5}
               fontWeight={n.type === "domain" || n.type === "topic" ? 600 : 400}
