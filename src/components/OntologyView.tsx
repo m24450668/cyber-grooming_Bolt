@@ -8,31 +8,35 @@ interface OntologyViewProps {
 
 function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [dimensions] = useState({ w: 1100, h: 720 });
-
   const entityMap = useMemo(() => {
     const m = new Map<string, OntologyEntity>();
     ontology.entities.forEach((e) => m.set(e.id, e));
     return m;
   }, [ontology]);
 
-  const { nodes, links } = useMemo(() => {
-    // Each type gets its own orbit ring with a distinct radius
-    // Nodes within each ring are distributed evenly to prevent overlap
-    const typeConfig: Record<string, { ring: number; radius: number; nodeRadius: number }> = {
-      domain:   { ring: 0, radius: 0,   nodeRadius: 30 },
-      topic:    { ring: 1, radius: 130, nodeRadius: 18 },
-      subtopic: { ring: 2, radius: 230, nodeRadius: 14 },
-      concept:  { ring: 3, radius: 320, nodeRadius: 11 },
-      method:   { ring: 4, radius: 400, nodeRadius: 10 },
-      actor:    { ring: 5, radius: 470, nodeRadius: 10 },
-      outcome:  { ring: 6, radius: 540, nodeRadius: 10 },
+  const { nodes, links, W: svgW, H: svgH } = useMemo(() => {
+    const W = 900;
+    const H = 600;
+    const cx = W / 2;
+    const cy = H / 2;
+    const maxR = Math.min(cx, cy) - 40; // safe margin for labels
+
+    // Each type gets its own orbit ring, scaled to fit canvas
+    const typeConfig: Record<string, { ring: number; nodeRadius: number }> = {
+      domain:   { ring: 0, nodeRadius: 26 },
+      topic:    { ring: 1, nodeRadius: 16 },
+      subtopic: { ring: 2, nodeRadius: 12 },
+      concept:  { ring: 3, nodeRadius: 10 },
+      method:   { ring: 4, nodeRadius: 9 },
+      actor:    { ring: 5, nodeRadius: 9 },
+      outcome:  { ring: 6, nodeRadius: 9 },
     };
 
-    const cx = dimensions.w / 2;
-    const cy = dimensions.h / 2;
+    const maxRing = 6;
+    // Distribute rings evenly from 0..maxR, center stays at 0
+    const ringRadius = (ring: number) => ring === 0 ? 0 : (ring / maxRing) * maxR;
 
-    // Group entities by type first so we can compute spacing per ring
+    // Group entities by type
     const byType = new Map<string, OntologyEntity[]>();
     ontology.entities.forEach((e) => {
       const arr = byType.get(e.type) || [];
@@ -40,7 +44,6 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
       byType.set(e.type, arr);
     });
 
-    // Track index per type for angular placement
     const typeIndex = new Map<string, number>();
 
     const positioned = ontology.entities.map((e) => {
@@ -48,20 +51,21 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
       const idx = typeIndex.get(e.type) ?? 0;
       typeIndex.set(e.type, idx + 1);
       const total = byType.get(e.type)?.length ?? 1;
+      const radius = ringRadius(cfg.ring);
 
-      // Angle offset per type so rings don't stack labels on top of each other
-      const typeOffset: Record<string, number> = {
-        domain: 0, topic: 0, subtopic: Math.PI / total,
-        concept: Math.PI / 6, method: Math.PI / 4,
-        actor: Math.PI / 3, outcome: Math.PI / 2,
+      // Small angle offset per type to stagger rings visually
+      const offsets: Record<string, number> = {
+        domain: 0, topic: 0, subtopic: 0.15,
+        concept: 0.35, method: 0.55,
+        actor: 0.75, outcome: 1.05,
       };
-      const offset = typeOffset[e.type] ?? 0;
+      const offset = offsets[e.type] ?? 0;
       const angle = (2 * Math.PI * idx) / total + offset - Math.PI / 2;
 
       return {
         ...e,
-        x: cx + cfg.radius * Math.cos(angle),
-        y: cy + cfg.radius * Math.sin(angle),
+        x: cx + radius * Math.cos(angle),
+        y: cy + radius * Math.sin(angle),
         color: ontology.legend[e.type]?.color || "#94a3b8",
         r: cfg.nodeRadius,
       };
@@ -77,8 +81,8 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
       })
       .filter(Boolean) as (OntologyRelation & { sx: number; sy: number; tx: number; ty: number })[];
 
-    return { nodes: positioned, links: positionedLinks };
-  }, [ontology, dimensions]);
+    return { nodes: positioned, links: positionedLinks, W, H };
+  }, [ontology]);
 
   const relationColors: Record<string, string> = {
     broader: "#94a3b8",
@@ -96,22 +100,26 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
   return (
     <div className="relative">
       <svg
-        viewBox={`0 0 ${dimensions.w} ${dimensions.h}`}
+        viewBox={`0 0 ${svgW} ${svgH}`}
         className="w-full h-auto border border-slate-200 rounded-xl bg-slate-50/50"
       >
         {/* Orbit ring guides */}
-        {[130, 230, 320, 400, 470, 540].map((r) => (
-          <circle
-            key={r}
-            cx={dimensions.w / 2}
-            cy={dimensions.h / 2}
-            r={r}
-            fill="none"
-            stroke="#e2e8f0"
-            strokeWidth={1}
-            strokeDasharray="3 5"
-          />
-        ))}
+        {[1, 2, 3, 4, 5, 6].map((ring) => {
+          const maxR = Math.min(svgW / 2, svgH / 2) - 40;
+          const r = (ring / 6) * maxR;
+          return (
+            <circle
+              key={ring}
+              cx={svgW / 2}
+              cy={svgH / 2}
+              r={r}
+              fill="none"
+              stroke="#e2e8f0"
+              strokeWidth={1}
+              strokeDasharray="3 5"
+            />
+          );
+        })}
 
         {/* Links */}
         {links.map((l, i) => {
@@ -152,8 +160,8 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
 
         {/* Nodes */}
         {nodes.map((n) => {
-          const cx2 = dimensions.w / 2;
-          const cy2 = dimensions.h / 2;
+          const cx2 = svgW / 2;
+          const cy2 = svgH / 2;
           // Determine label anchor based on position relative to center
           const dx = n.x - cx2;
           const dy = n.y - cy2;
