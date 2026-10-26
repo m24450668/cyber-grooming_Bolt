@@ -51,7 +51,8 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
       const idx = typeIndex.get(e.type) ?? 0;
       typeIndex.set(e.type, idx + 1);
       const total = byType.get(e.type)?.length ?? 1;
-      const radius = ringRadius(cfg.ring);
+      const baseRadius = e.type === "actor" ? 285 : ringRadius(cfg.ring);
+      const radius = baseRadius + (idx % 2 === 0 ? 0 : 15);
 
       // Small angle offset per type to stagger rings visually
       const offsets: Record<string, number> = {
@@ -62,12 +63,18 @@ function ForceGraph({ ontology }: { ontology: SemanticOntology }) {
       const offset = offsets[e.type] ?? 0;
       const angle = (2 * Math.PI * idx) / total + offset - Math.PI / 2;
 
+      const rawX = cx + radius * Math.cos(angle);
+      const rawY = cy + radius * Math.sin(angle);
+      const nodeR = cfg.nodeRadius;
+      const clampedX = Math.max(nodeR + 30, Math.min(W - nodeR - 30, rawX));
+      const clampedY = Math.max(nodeR + 30, Math.min(H - nodeR - 30, rawY));
+
       return {
         ...e,
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle),
+        x: clampedX,
+        y: clampedY,
         color: ontology.legend[e.type]?.color || "#94a3b8",
-        r: cfg.nodeRadius,
+        r: nodeR,
       };
     });
 
